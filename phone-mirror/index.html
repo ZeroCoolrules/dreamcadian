@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone Mirror</title>
+<style>
+  :root { --bg:#111418; --panel:#1b2027; --text:#e7ebf0; --muted:#8b95a3; --accent:#3b82f6; --bad:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px system-ui, sans-serif;
+         display:flex; height:100vh; overflow:hidden; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; padding:12px; min-width:0; }
+  #screen { max-width:100%; max-height:100%; border-radius:14px; background:#000;
+            box-shadow:0 0 0 2px #2a313b; cursor:crosshair; user-select:none; -webkit-user-drag:none;
+            touch-action:none; }
+  #side { width:250px; background:var(--panel); padding:14px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
+  h1 { font-size:16px; margin:0; }
+  .muted { color:var(--muted); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  button { background:#2a313b; color:var(--text); border:0; border-radius:8px; padding:9px 4px;
+           font:inherit; cursor:pointer; }
+  button:hover { background:#353e4a; }
+  button.primary { background:var(--accent); }
+  input[type=text], input[type=password] { width:100%; padding:8px; border-radius:8px; border:1px solid #2a313b;
+           background:#0d1014; color:var(--text); font:inherit; }
+  label { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--muted); }
+  #err { color:var(--bad); font-size:12px; white-space:pre-wrap; }
+  .sec { border-top:1px solid #2a313b; padding-top:10px; display:flex; flex-direction:column; gap:6px; }
+  kbd { background:#2a313b; border-radius:4px; padding:0 4px; font-size:11px; }
+</style>
+</head>
+<body>
+<div id="stage"><img id="screen" alt="Phone screen" draggable="false"></div>
+<div id="side">
+  <div>
+    <h1 id="title">Phone Mirror</h1>
+    <div class="muted" id="status">connecting…</div>
+    <div id="err"></div>
+  </div>
+
+  <div class="grid">
+    <button data-key="back" title="Back (Esc)">◀ Back</button>
+    <button data-key="home" title="Home">● Home</button>
+    <button data-key="recents" title="Recent apps">▣ Apps</button>
+    <button data-key="volup">Vol +</button>
+    <button data-key="voldown">Vol −</button>
+    <button data-key="power">Power</button>
+  </div>
+
+  <div class="sec">
+    <b>Unlock</b>
+    <button class="primary" id="wake">Wake &amp; swipe up</button>
+    <input type="password" id="pin" placeholder="PIN / password (optional)" autocomplete="off">
+    <button id="unlock">Enter PIN</button>
+    <div class="muted">Pattern locks: draw it with the mouse on the screen.</div>
+  </div>
+
+  <div class="sec">
+    <b>Type text</b>
+    <input type="text" id="text" placeholder="Text to send to phone">
+    <label><input type="checkbox" id="enter"> press Enter after</label>
+    <button id="send">Send text</button>
+    <label><input type="checkbox" id="kbd" checked> forward my keyboard</label>
+  </div>
+
+  <div class="sec">
+    <button id="shot">Save screenshot</button>
+    <div class="muted">
+      Click = tap · drag = swipe · hold = long press · scroll wheel = scroll ·
+      right-click = Back · <kbd>Esc</kbd> Back
+    </div>
+  </div>
+</div>
+
+<script>
+const img = document.getElementById('screen');
+const $ = id => document.getElementById(id);
+
+function connect() { img.src = '/stream?t=' + Date.now(); }
+img.onerror = () => setTimeout(connect, 1000);
+connect();
+
+async function send(ev) {
+  try {
+    const r = await fetch('/input', { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                       body: JSON.stringify(ev) });
+    if (!r.ok) $('err').textContent = (await r.json()).error || 'input failed';
+  } catch (e) { $('err').textContent = 'Lost connection to mirror.py'; }
+}
+const key = k => send({type: 'key', key: k});
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---- status -------------------------------------------------------------
+async function poll() {
+  try {
+    const s = await (await fetch('/status')).json();
+    $('title').textContent = s.model || 'Phone Mirror';
+    $('status').textContent = `Android ${s.android} · ${s.size ? s.size.join('×') : '?'} · ${s.fps} fps`;
+    $('err').textContent = s.error || '';
+  } catch (e) { $('status').textContent = 'mirror.py is not running'; }
+  setTimeout(poll, 1500);
+}
+poll();
+
+// ---- mouse -> touch -----------------------------------------------------
+function frac(e) {
+  const r = img.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+}
+let down = null;
+img.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  img.setPointerCapture(e.pointerId);
+  down = { ...frac(e), t: performance.now() };
+});
+img.addEventListener('pointerup', e => {
+  if (!down) return;
+  const up = frac(e), ms = Math.round(performance.now() - down.t);
+  const r = img.getBoundingClientRect();
+  const dist = Math.hypot((up.x - down.x) * r.width, (up.y - down.y) * r.height);
+  if (dist < 6 && ms < 450) send({type: 'tap', x: down.x, y: down.y});
+  else if (dist < 6) send({type: 'longpress', x1: down.x, y1: down.y, ms: Math.max(ms, 600)});
+  else send({type: 'swipe', x1: down.x, y1: down.y, x2: up.x, y2: up.y, ms: Math.min(Math.max(ms, 80), 2000)});
+  down = null;
+});
+img.addEventListener('contextmenu', e => { e.preventDefault(); key('back'); });
+
+let wheelAcc = 0, wheelTimer = null, wheelPos = null;
+img.addEventListener('wheel', e => {
+  e.preventDefault();
+  wheelAcc += e.deltaY; wheelPos = frac(e);
+  clearTimeout(wheelTimer);
+  wheelTimer = setTimeout(() => {
+    const dy = Math.max(-0.6, Math.min(0.6, -wheelAcc / 1000));
+    const y1 = Math.min(Math.max(wheelPos.y, 0.2), 0.8);
+    send({type: 'swipe', x1: wheelPos.x, y1, x2: wheelPos.x, y2: Math.min(Math.max(y1 + dy, 0.02), 0.98), ms: 250});
+    wheelAcc = 0;
+  }, 80);
+}, {passive: false});
+
+// ---- buttons ------------------------------------------------------------
+document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => key(b.dataset.key));
+$('wake').onclick = async () => {
+  await key('wakeup'); await sleep(400);
+  await send({type: 'swipe', x1: 0.5, y1: 0.85, x2: 0.5, y2: 0.25, ms: 250});
+};
+$('unlock').onclick = async () => {
+  const pin = $('pin').value;
+  if (!pin) return;
+  await send({type: 'text', text: pin}); await sleep(200); await key('enter');
+  $('pin').value = '';
+};
+$('send').onclick = async () => {
+  await send({type: 'text', text: $('text').value});
+  if ($('enter').checked) await key('enter');
+  $('text').value = '';
+};
+$('text').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('send').click(); } });
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('unlock').click(); } });
+$('shot').onclick = () => { location.href = '/screenshot'; };
+
+// ---- keyboard forwarding ------------------------------------------------
+const KEYMAP = { Backspace: 'del', Delete: 'forward_del', Enter: 'enter', Escape: 'back', Tab: 'tab',
+                 ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+                 Home: 'move_home', End: 'move_end' };
+let pending = '', flushTimer = null;
+function flush() { if (pending) { send({type: 'text', text: pending}); pending = ''; } }
+document.addEventListener('keydown', e => {
+  if (!$('kbd').checked || e.target.tagName === 'INPUT' || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (KEYMAP[e.key]) { e.preventDefault(); flush(); key(KEYMAP[e.key]); return; }
+  if (e.key.length === 1) {
+    e.preventDefault();
+    pending += e.key;            // batch fast typing into one command
+    clearTimeout(flushTimer); flushTimer = setTimeout(flush, 120);
+  }
+});
+</script>
+</body>
+</html>

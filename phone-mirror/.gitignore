@@ -1,0 +1,3 @@
+allowed_devices.txt
+platform-tools/
+__pycache__/
